@@ -18,7 +18,7 @@ export namespace Fetch {
 			Authorization?: string;
 			[key: string]: string | undefined;
 		};
-		/** 请求体，对象会根据 Content-Type 自动序列化 */
+		/** 请求体，对象会根据 Content-Type会自动序列化 如果不传会默认转成json  其他类型需要设置的相应类型*/
 		body?: any;
 		/** 超时时间，单位毫秒，默认 15000ms */
 		timeout?: number;
