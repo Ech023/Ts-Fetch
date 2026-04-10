@@ -3,47 +3,29 @@
  * 基于 XMLHttpRequest 封装，提供 Promise 支持和类型定义
  */
 export namespace Fetch {
-	/** HTTP 请求方法 */
-	export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS";
-
-	/** 响应数据类型 */
-	export type ResponseType = "text" | "json" | "blob" | "arraybuffer";
-
-	/** 常见 Content-Type */
-	export type ContentType =
-		| "application/json"
-		| "text/plain"
-		| "application/x-www-form-urlencoded"
-		| "multipart/form-data"
-		| "application/octet-stream";
-
-	/** 查询参数单个值类型 */
-	export type ParamValue = string | number | boolean | string[] | number[] | undefined | null;
-
-	/** 查询参数对象 */
-	export type QueryParams = Record<string, ParamValue>;
-
-	/** 请求头定义 */
-	export interface FetchHeaders {
-		"Content-Type"?: ContentType | string;
-		Authorization?: string;
-		[key: string]: string | undefined;
-	}
-
 	/** 请求配置 */
 	export interface FetchOptions {
 		/** HTTP 方法，默认 GET */
-		method?: HttpMethod;
+		method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS";
 		/** 请求头 */
-		headers?: FetchHeaders;
+		headers?: {
+			"Content-Type"?:
+				| "application/json"
+				| "text/plain"
+				| "application/x-www-form-urlencoded"
+				| "multipart/form-data"
+				| "application/octet-stream";
+			Authorization?: string;
+			[key: string]: string | undefined;
+		};
 		/** 请求体，对象会根据 Content-Type 自动序列化 */
 		body?: any;
 		/** 超时时间，单位毫秒，默认 15000ms */
 		timeout?: number;
 		/** 响应数据类型，默认按 json 处理 */
-		responseType?: ResponseType;
+		responseType?: "text" | "json" | "blob" | "arraybuffer";
 		/** URL 查询参数，自动拼接到 URL */
-		params?: QueryParams;
+		params?: Record<string, unknown>;
 		/** 取消请求信号，配合 AbortController 使用 */
 		signal?: AbortSignal;
 		/** 下载进度回调 */
@@ -55,7 +37,7 @@ export namespace Fetch {
 	/** 响应头操作接口 */
 	export interface ResFetchHeaders {
 		keys: () => string[];
-		entries: () => [string, string | null][];
+		entries: () => [string, string][];
 		get: (name: string) => string | null;
 		has: (name: string) => boolean;
 	}
@@ -93,65 +75,85 @@ export namespace Fetch {
 	 */
 	export async function request<T = any>(url: string, options: FetchOptions = {}): Promise<FetchResponse<T>> {
 		return new Promise((resolve, reject) => {
+			// 创建 XMLHttpRequest 实例
 			const xhr = new XMLHttpRequest();
+			// 获取请求方法，默认 GET
 			const method = options.method || "GET";
-
-			// 构建查询字符串，拼接到 URL
-			let finalUrl = url;
+			let finalUrl: string = "";
+			// 处理 URL 查询参数
+			let baseUrl = url;
 			if (options.params) {
 				const queryParts: string[] = [];
 				for (const [key, value] of Object.entries(options.params)) {
+					// 跳过 undefined 和 null
 					if (value === undefined || value === null) continue;
 					if (Array.isArray(value)) {
 						// 数组参数展开为多个同名键
-						value.forEach((v: string | number | boolean) => queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(v)}`));
+						value.forEach((v: string | number | boolean) =>
+							queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`),
+						);
 					} else {
-						queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value as string | number | boolean)}`);
+						queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
 					}
 				}
 				if (queryParts.length > 0) {
-					finalUrl += (finalUrl.includes("?") ? "&" : "?") + queryParts.join("&");
+					// 如果 URL 已有查询参数，则用 & 连接，否则用 ? 连接
+					baseUrl += (baseUrl.includes("?") ? "&" : "?") + queryParts.join("&");
 				}
 			}
+			finalUrl = baseUrl;
 
+			// 初始化请求
 			xhr.open(method, finalUrl, true);
+
+			// 设置响应类型
+			const responseType = options.responseType || "text";
+			xhr.responseType = responseType as XMLHttpRequestResponseType;
+
+			// 设置超时时间
 			xhr.timeout = options.timeout ?? 15000;
 
-			// json 由手动解析处理，不设置 xhr.responseType
-			if (options.responseType && options.responseType !== "json") {
-				xhr.responseType = options.responseType;
-			}
-
-			// 过滤掉值为 undefined 的请求头
+			// 处理请求头
 			const requestHeaders: Record<string, string> = {};
 			for (const [key, val] of Object.entries(options.headers || {})) {
-				if (val !== undefined) requestHeaders[key] = val;
+				if (val !== undefined) requestHeaders[key] = String(val);
 			}
 
-			// 根据 Content-Type 自动序列化请求体
+			// 处理请求体
 			let requestBody = options.body;
-			if (requestBody && typeof requestBody === "object" && !(requestBody instanceof FormData) && !(requestBody instanceof Blob)) {
-				const ct = requestHeaders["Content-Type"] || "";
-				if (ct.includes("application/x-www-form-urlencoded")) {
-					// 表单格式：key=value&key2=value2
-					requestBody = Object.entries(requestBody)
-						.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v as any)}`)
-						.join("&");
-				} else {
-					// 默认 JSON 序列化
-					requestBody = JSON.stringify(requestBody);
+			// 只有非 GET/HEAD 请求才处理请求体
+			if (requestBody && method !== "GET" && method !== "HEAD") {
+				if (requestBody instanceof FormData || requestBody instanceof Blob) {
+					// 如果是 FormData 或 Blob 对象，不设置 Content-Type
+					if (requestHeaders["Content-Type"]) {
+						delete requestHeaders["Content-Type"];
+					}
+				} else if (typeof requestBody === "object" && requestBody !== null) {
+					// 如果是普通对象，根据 Content-Type 进行序列化
+					const contentType = requestHeaders["Content-Type"] || "application/json";
+					// 如果没有设置 Content-Type，则设置默认值
 					if (!requestHeaders["Content-Type"]) {
-						requestHeaders["Content-Type"] = "application/json";
+						requestHeaders["Content-Type"] = contentType;
+					}
+					// 根据 Content-Type 进行序列化
+					if (contentType.includes("application/x-www-form-urlencoded")) {
+						requestBody = Object.entries(requestBody)
+							.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+							.join("&");
+					} else if (contentType.includes("application/json")) {
+						requestBody = JSON.stringify(requestBody);
 					}
 				}
 			}
 
-			// 设置请求头
-			for (const [key, val] of Object.entries(requestHeaders)) {
-				if (val) xhr.setRequestHeader(key, val);
+			// 设置请求头（如果是 FormData 不设置任何请求头，浏览器会自动设置）
+			if (!(requestBody instanceof FormData)) {
+				for (const [key, val] of Object.entries(requestHeaders)) {
+					if (val) xhr.setRequestHeader(key, val);
+				}
 			}
 
-			// 取消请求支持
+			// 处理请求取消信号
 			if (options.signal) {
 				if (options.signal.aborted) {
 					reject(new FetchError("Request Aborted", 0));
@@ -163,12 +165,13 @@ export namespace Fetch {
 				});
 			}
 
-			// 进度回调
+			// 设置进度回调
 			if (options.onDownloadProgress) xhr.onprogress = options.onDownloadProgress;
 			if (options.onUploadProgress) xhr.upload.onprogress = options.onUploadProgress;
 
+			// 请求完成回调
 			xhr.onload = () => {
-				// 解析响应头为 Map
+				// 解析响应头
 				const responseHeadersMap: Record<string, string> = {};
 				xhr.getAllResponseHeaders()
 					.trim()
@@ -176,10 +179,13 @@ export namespace Fetch {
 					.forEach(line => {
 						const idx = line.indexOf(": ");
 						if (idx !== -1) {
-							responseHeadersMap[line.slice(0, idx).toLowerCase()] = line.slice(idx + 2);
+							const headerName = line.slice(0, idx).toLowerCase().trim();
+							const headerValue = line.slice(idx + 2).trim();
+							responseHeadersMap[headerName] = headerValue;
 						}
 					});
 
+				// 构建响应对象
 				const response: FetchResponse<T> = {
 					ok: xhr.status >= 200 && xhr.status < 300,
 					status: xhr.status,
@@ -188,13 +194,36 @@ export namespace Fetch {
 					headers: {
 						keys: () => Object.keys(responseHeadersMap),
 						entries: () => Object.entries(responseHeadersMap),
-						get: name => responseHeadersMap[name.toLowerCase()] ?? null,
-						has: name => name.toLowerCase() in responseHeadersMap,
+						get: name => responseHeadersMap[name.toLowerCase().trim()] ?? null,
+						has: name => name.toLowerCase().trim() in responseHeadersMap,
 					},
 					text: () => Promise.resolve(xhr.responseText || ""),
-					blob: () => Promise.resolve(xhr.response instanceof Blob ? xhr.response : new Blob([xhr.response])),
-					arrayBuffer: () => Promise.resolve(xhr.response),
+					blob: () => {
+						// 如果已经是 Blob 对象，直接返回
+						if (xhr.response instanceof Blob) {
+							return Promise.resolve(xhr.response);
+						} else if (xhr.responseType === "blob") {
+							return Promise.resolve(xhr.response);
+						} else {
+							// 否则从响应数据创建 Blob
+							return Promise.resolve(new Blob([xhr.response]));
+						}
+					},
+					arrayBuffer: async () => {
+						if (xhr.responseType === "arraybuffer") {
+							return Promise.resolve(xhr.response);
+						} else {
+							// 从 Blob 获取 ArrayBuffer
+							const blob = await response.blob();
+							return blob.arrayBuffer();
+						}
+					},
 					json: async () => {
+						// 如果设置了 json 响应类型，直接返回
+						if (xhr.responseType === "json") {
+							return Promise.resolve(xhr.response);
+						}
+						// 否则从文本解析
 						const text = xhr.responseText;
 						if (!text) return null as T;
 						try {
@@ -205,17 +234,26 @@ export namespace Fetch {
 					},
 				};
 
+				// 根据 HTTP 状态码决定 resolve 或 reject
 				if (response.ok) {
 					resolve(response);
 				} else {
-					reject(new FetchError(`HTTP Error: ${xhr.status}`, xhr.status, xhr.statusText));
+					reject(new FetchError(`HTTP Error: ${xhr.status} ${xhr.statusText}`, xhr.status, xhr.statusText));
 				}
 			};
 
+			// 网络错误回调
 			xhr.onerror = () => reject(new FetchError("Network Error", 0));
+			// 超时错误回调
 			xhr.ontimeout = () => reject(new FetchError("Request Timeout", 408));
 
-			xhr.send(requestBody ?? null);
+			// 发送请求
+			// GET 和 HEAD 请求不应有请求体
+			if (method === "GET" || method === "HEAD") {
+				xhr.send(null);
+			} else {
+				xhr.send(requestBody ?? null);
+			}
 		});
 	}
 
